@@ -1,99 +1,98 @@
-# app.py - FastAPI application for image storage in MongoDB with base64 encoding
-
-import os
+import io
 import base64
-from fastapi import FastAPI, HTTPException, Depends, status
+import tempfile
+from fastapi import FastAPI, File, UploadFile, HTTPException, Header, Depends
+from fastapi.responses import JSONResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from pydantic import BaseModel
 from pymongo import MongoClient
-from bson.objectid import ObjectId
-from typing import Optional
+from bson import ObjectId
+import gridfs
+from gradio_client import Client, handle_file
+import os
 
-# Initialize FastAPI app
-app = FastAPI(
-    title="Image API with MongoDB",
-    description="API to store and retrieve images as base64 strings in MongoDB. Endpoints are protected with API key authentication."
-)
+# -------------------------------
+# Config
+# -------------------------------
+MONGO_URI = os.getenv("MONGODB_URL") 
+DB_NAME = "hair_analyzer_db"
+BEARER_TOKEN = os.getenv("API_KEY")
 
-# Security scheme for API key (HTTP Bearer)
+# -------------------------------
+# MongoDB setup
+# -------------------------------
+mongo_client = MongoClient(MONGO_URI)
+db = mongo_client[DB_NAME]
+fs = gridfs.GridFS(db)
+
+# -------------------------------
+# FastAPI setup
+# -------------------------------
+app = FastAPI(title="Hair Analyzer API")
+
+# Hugging Face Space
+HF_SPACE = "LogicGoInfotechSpaces/hairanalyzer"
+HF_TOKEN = None  # set your HF token if private
+client = Client(HF_SPACE, hf_token=HF_TOKEN)
+
+# -------------------------------
+# Auth
+# -------------------------------
 security = HTTPBearer()
 
-# Environment variables
-MONGODB_URL = os.getenv("MONGODB_URL")  # e.g., mongodb://username:password@host:port/dbname
-API_KEY = os.getenv("API_KEY")  # Set this in your environment for authentication
+def check_auth(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    if credentials.credentials != BEARER_TOKEN:
+        raise HTTPException(status_code=403, detail="Invalid token")
 
-if not MONGODB_URL:
-    raise ValueError("MONGODB_URL environment variable is not set.")
-if not API_KEY:
-    raise ValueError("API_KEY environment variable is not set.")
-
-# MongoDB client
-client = MongoClient(MONGODB_URL)
-db = client.get_default_database()  # Or specify db name if not in URL
-collection = db.images  # Collection to store images
-
-# Pydantic model for image data
-class ImageData(BaseModel):
-    image_base64: str  # Base64 encoded image string
-    filename: Optional[str] = None
-    description: Optional[str] = None
-
-class ImageResponse(BaseModel):
-    id: str
-    image_base64: str
-    filename: Optional[str]
-    description: Optional[str]
-
-# Dependency for API key authentication
-def authenticate(credentials: HTTPAuthorizationCredentials = Depends(security)):
-    if credentials.credentials != API_KEY:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid API key",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    return True
-
-@app.get("/")
-def root():
-    return {"message": "Welcome to the Image API. Use /docs for Swagger UI."}
-
-# Endpoint to upload image as base64
-@app.post("/images/", response_model=ImageResponse, status_code=201)
-def upload_image(image: ImageData, auth: bool = Depends(authenticate)):
-    # Insert into MongoDB
-    result = collection.insert_one({
-        "image_base64": image.image_base64,
-        "filename": image.filename,
-        "description": image.description
-    })
-    return {
-        "id": str(result.inserted_id),
-        "image_base64": image.image_base64,
-        "filename": image.filename,
-        "description": image.description
-    }
-
-# Endpoint to retrieve image by ID
-@app.get("/images/{image_id}", response_model=ImageResponse)
-def get_image(image_id: str, auth: bool = Depends(authenticate)):
+# -------------------------------
+# Upload endpoint
+# -------------------------------
+@app.post("/upload")
+def upload_image(file: UploadFile = File(...), auth: bool = Depends(check_auth)):
     try:
-        obj_id = ObjectId(image_id)
-    except:
-        raise HTTPException(status_code=400, detail="Invalid image ID format")
-    
-    image_doc = collection.find_one({"_id": obj_id})
-    if not image_doc:
-        raise HTTPException(status_code=404, detail="Image not found")
-    
-    return {
-        "id": str(image_doc["_id"]),
-        "image_base64": image_doc["image_base64"],
-        "filename": image_doc.get("filename"),
-        "description": image_doc.get("description")
-    }
+        file_bytes = file.file.read()
+        file_base64 = base64.b64encode(file_bytes).decode("utf-8")
 
-# Run the app (for local testing; Render will use its own command)
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+        # Store in MongoDB
+        file_id = fs.put(file_bytes, filename=file.filename, contentType=file.content_type, base64=file_base64)
+
+        return {"id": str(file_id), "filename": file.filename}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
+
+# -------------------------------
+# Analyze endpoint
+# -------------------------------
+@app.get("/analyze/{image_id}")
+def analyze_image(image_id: str, auth: bool = Depends(check_auth)):
+    try:
+        # Fetch image from GridFS
+        grid_out = fs.get(ObjectId(image_id))
+        img_bytes = grid_out.read()
+
+        # Save to temp file in /tmp for Gradio client
+        with tempfile.NamedTemporaryFile(suffix=".jpg", dir="/tmp") as tmp:
+            tmp.write(img_bytes)
+            tmp.flush()
+
+            # Call HF Gradio Space
+            result = client.predict(
+                img=handle_file(tmp.name),
+                api_name="/predict"
+            )
+
+        return JSONResponse(content={
+            "hair_type": result[0],
+            "face_shape": result[1],
+            "gender": result[2]
+        })
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Prediction failed: {str(e)}")
+
+# -------------------------------
+# Health endpoint
+# -------------------------------
+@app.get("/health")
+def health():
+    return {"status": "ok"}

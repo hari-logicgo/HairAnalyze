@@ -1,5 +1,6 @@
 fastapi
-uvicorn
+uvicorn[standard]
 pydantic
 pymongo
 python-dotenv
+gradio_client
