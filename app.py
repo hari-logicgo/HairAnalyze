@@ -10,7 +10,6 @@ from pymongo import MongoClient
 from bson import ObjectId
 import gridfs
 from gradio_client import Client, handle_file
-
 # -------------------------------
 # Config
 # -------------------------------
@@ -111,11 +110,11 @@ def upload_reference_image(file: UploadFile = File(...), auth: bool = Depends(ch
 @app.get("/swap/{source_id}/{ref_id}")
 def swap_hairstyle(source_id: str, ref_id: str, auth: bool = Depends(check_auth)):
     try:
-        # Fetch source and reference images from MongoDB
+        # Fetch source and reference images from GridFS
         src_bytes = fs.get(ObjectId(source_id)).read()
         ref_bytes = fs.get(ObjectId(ref_id)).read()
 
-        # Save temp files
+        # Save temp files for HF
         with tempfile.NamedTemporaryFile(suffix=".jpg", dir="/tmp") as src_tmp, \
              tempfile.NamedTemporaryFile(suffix=".jpg", dir="/tmp") as ref_tmp:
 
@@ -138,22 +137,25 @@ def swap_hairstyle(source_id: str, ref_id: str, auth: bool = Depends(check_auth)
 
             # Swap hair
             swap_result = hair_swap_client.predict(
-                face=handle_file(src_preprocessed),
-                shape=handle_file(ref_preprocessed),
-                color=handle_file(ref_preprocessed),
+                face=handle_file(src_preprocessed["value"] if isinstance(src_preprocessed, dict) else src_preprocessed),
+                shape=handle_file(ref_preprocessed["value"] if isinstance(ref_preprocessed, dict) else ref_preprocessed),
+                color=handle_file(ref_preprocessed["value"] if isinstance(ref_preprocessed, dict) else ref_preprocessed),
                 blending="Article",
                 poisson_iters=0,
                 poisson_erosion=15,
                 api_name="/swap_hair"
             )
 
-            # Read swapped image and convert to base64
-            with open(swap_result[0], "rb") as f:
-                img_base64 = base64.b64encode(f.read()).decode("utf-8")
+            # Extract actual file path
+            swap_file_path = swap_result[0]["value"] if isinstance(swap_result[0], dict) else swap_result[0]
+
+            # Convert to base64
+            with open(swap_file_path, "rb") as f:
+                swap_base64 = base64.b64encode(f.read()).decode("utf-8")
 
         return JSONResponse(content={
-            "result_image_base64": img_base64,
-            "message": swap_result[1]
+            "result_image_base64": swap_base64,
+            "message": swap_result[1]  # Optional text message from HF
         })
 
     except Exception as e:
