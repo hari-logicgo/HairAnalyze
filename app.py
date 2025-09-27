@@ -111,13 +111,9 @@ def upload_reference_image(file: UploadFile = File(...), auth: bool = Depends(ch
 @app.get("/swap/{source_id}/{ref_id}")
 def swap_hairstyle(source_id: str, ref_id: str, auth: bool = Depends(check_auth)):
     try:
-        # Fetch source image
-        src_grid = fs.get(ObjectId(source_id))
-        src_bytes = src_grid.read()
-
-        # Fetch reference hairstyle image
-        ref_grid = fs.get(ObjectId(ref_id))
-        ref_bytes = ref_grid.read()
+        # Fetch source and reference images from MongoDB
+        src_bytes = fs.get(ObjectId(source_id)).read()
+        ref_bytes = fs.get(ObjectId(ref_id)).read()
 
         # Save temp files
         with tempfile.NamedTemporaryFile(suffix=".jpg", dir="/tmp") as src_tmp, \
@@ -151,8 +147,12 @@ def swap_hairstyle(source_id: str, ref_id: str, auth: bool = Depends(check_auth)
                 api_name="/swap_hair"
             )
 
+            # Read swapped image and convert to base64
+            with open(swap_result[0], "rb") as f:
+                img_base64 = base64.b64encode(f.read()).decode("utf-8")
+
         return JSONResponse(content={
-            "result_image": swap_result[0],  # filepath or base64 returned by HF
+            "result_image_base64": img_base64,
             "message": swap_result[1]
         })
 
