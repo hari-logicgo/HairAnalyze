@@ -1,21 +1,25 @@
+# app.py - Full Hair Analyzer + Haircut API
 import io
 import base64
 import tempfile
-from fastapi import FastAPI, File, UploadFile, HTTPException, Header, Depends
+import os
+from fastapi import FastAPI, File, UploadFile, HTTPException, Depends
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pymongo import MongoClient
 from bson import ObjectId
 import gridfs
 from gradio_client import Client, handle_file
-import os
 
 # -------------------------------
 # Config
 # -------------------------------
-MONGO_URI = os.getenv("MONGODB_URL") 
+MONGO_URI = os.getenv("MONGODB_URL")  # MongoDB URL
 DB_NAME = "hair_analyzer_db"
-BEARER_TOKEN = os.getenv("API_KEY")
+BEARER_TOKEN = os.getenv("API_KEY")   # Set your API key
+
+if not MONGO_URI or not BEARER_TOKEN:
+    raise ValueError("MONGODB_URL and API_KEY must be set in environment variables")
 
 # -------------------------------
 # MongoDB setup
@@ -29,10 +33,12 @@ fs = gridfs.GridFS(db)
 # -------------------------------
 app = FastAPI(title="Hair Analyzer API")
 
-# Hugging Face Space
-HF_SPACE = "LogicGoInfotechSpaces/hairanalyzer"
-HF_TOKEN = None  # set your HF token if private
-client = Client(HF_SPACE, hf_token=HF_TOKEN)
+# Hugging Face Spaces
+HF_ANALYZE_SPACE = "LogicGoInfotechSpaces/hairanalyzer"
+HF_HAIRCUT_SPACE = "LogicGoInfotechSpaces/haircutidentifier"
+
+analyze_client = Client(HF_ANALYZE_SPACE)
+haircut_client = Client(HF_HAIRCUT_SPACE)
 
 # -------------------------------
 # Auth
@@ -44,24 +50,20 @@ def check_auth(credentials: HTTPAuthorizationCredentials = Depends(security)):
         raise HTTPException(status_code=403, detail="Invalid token")
 
 # -------------------------------
-# Upload endpoint
+# Upload Endpoint
 # -------------------------------
-@app.post("/upload")
+@app.post("/source-image")
 def upload_image(file: UploadFile = File(...), auth: bool = Depends(check_auth)):
     try:
         file_bytes = file.file.read()
-        file_base64 = base64.b64encode(file_bytes).decode("utf-8")
-
-        # Store in MongoDB
-        file_id = fs.put(file_bytes, filename=file.filename, contentType=file.content_type, base64=file_base64)
-
+        # Store in GridFS
+        file_id = fs.put(file_bytes, filename=file.filename, contentType=file.content_type)
         return {"id": str(file_id), "filename": file.filename}
-
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
 
 # -------------------------------
-# Analyze endpoint
+# Analyze Endpoint
 # -------------------------------
 @app.get("/analyze/{image_id}")
 def analyze_image(image_id: str, auth: bool = Depends(check_auth)):
@@ -70,22 +72,32 @@ def analyze_image(image_id: str, auth: bool = Depends(check_auth)):
         grid_out = fs.get(ObjectId(image_id))
         img_bytes = grid_out.read()
 
-        # Save to temp file in /tmp for Gradio client
+        # Save to temp file for HF Gradio clients
         with tempfile.NamedTemporaryFile(suffix=".jpg", dir="/tmp") as tmp:
             tmp.write(img_bytes)
             tmp.flush()
 
-            # Call HF Gradio Space
-            result = client.predict(
+            # Analyze Hair Type, Face Shape, Gender
+            analyze_result = analyze_client.predict(
                 img=handle_file(tmp.name),
                 api_name="/predict"
             )
 
-        return JSONResponse(content={
-            "hair_type": result[0],
-            "face_shape": result[1],
-            "gender": result[2]
-        })
+            # Analyze Haircut
+            haircut_result = haircut_client.predict(
+                img=handle_file(tmp.name),
+                api_name="/predict"
+            )
+
+        # Combine results
+        response = {
+            "hair_type": analyze_result[0],
+            "face_shape": analyze_result[1],
+            "gender": analyze_result[2],
+            "haircut": haircut_result
+        }
+
+        return JSONResponse(content=response)
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Prediction failed: {str(e)}")
