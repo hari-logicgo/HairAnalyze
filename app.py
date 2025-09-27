@@ -4,13 +4,13 @@ import base64
 import tempfile
 import os
 from fastapi import FastAPI, File, UploadFile, HTTPException, Depends
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pymongo import MongoClient
 from bson import ObjectId
 import gridfs
 from gradio_client import Client, handle_file
-# -------------------------------
+
 # Config
 # -------------------------------
 MONGO_URI = os.getenv("MONGODB_URL")  # MongoDB URL
@@ -107,16 +107,16 @@ def upload_reference_image(file: UploadFile = File(...), auth: bool = Depends(ch
 # -------------------------------
 # Hairstyle Swap Endpoint
 # -------------------------------
-@app.get("/swap/{source_id}/{ref_id}")
-def swap_hairstyle(source_id: str, ref_id: str, auth: bool = Depends(check_auth)):
+@app.get("/swap/{source_id}/{ref_id}/file")
+def swap_hairstyle_file(source_id: str, ref_id: str, auth: bool = Depends(check_auth)):
     try:
         # Fetch source and reference images from GridFS
         src_bytes = fs.get(ObjectId(source_id)).read()
         ref_bytes = fs.get(ObjectId(ref_id)).read()
 
         # Save temp files for HF
-        with tempfile.NamedTemporaryFile(suffix=".jpg", dir="/tmp") as src_tmp, \
-             tempfile.NamedTemporaryFile(suffix=".jpg", dir="/tmp") as ref_tmp:
+        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as src_tmp, \
+             tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as ref_tmp:
 
             src_tmp.write(src_bytes)
             src_tmp.flush()
@@ -149,14 +149,8 @@ def swap_hairstyle(source_id: str, ref_id: str, auth: bool = Depends(check_auth)
             # Extract actual file path
             swap_file_path = swap_result[0]["value"] if isinstance(swap_result[0], dict) else swap_result[0]
 
-            # Convert to base64
-            with open(swap_file_path, "rb") as f:
-                swap_base64 = base64.b64encode(f.read()).decode("utf-8")
-
-        return JSONResponse(content={
-            "result_image_base64": swap_base64,
-            "message": swap_result[1]  # Optional text message from HF
-        })
+        # Return FileResponse so it can be previewed or downloaded directly
+        return FileResponse(swap_file_path, media_type="image/webp", filename="swap_result.webp")
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Hair swap failed: {str(e)}")
