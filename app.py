@@ -10,7 +10,8 @@ from pymongo import MongoClient
 from bson import ObjectId
 import gridfs
 from gradio_client import Client, handle_file
-
+import time
+from datetime import datetime
 # Config
 # -------------------------------
 MONGO_URI = os.getenv("MONGODB_URL")  # MongoDB URL
@@ -149,12 +150,37 @@ def swap_hairstyle_file(source_id: str, ref_id: str, auth: bool = Depends(check_
             # Extract actual file path
             swap_file_path = swap_result[0]["value"] if isinstance(swap_result[0], dict) else swap_result[0]
 
+        # ✅ Log usage in MongoDB
+        try:
+            db["swap_logs"].insert_one({
+                "timestamp": int(time.time()),
+                "datetime": datetime.utcnow(),
+                "source_id": source_id,
+                "ref_id": ref_id,
+                "output_path": swap_file_path,
+                "status": "success"
+            })
+        except Exception as log_err:
+            print("⚠️ Failed to log swap call:", log_err)
+
         # Return FileResponse so it can be previewed or downloaded directly
         return FileResponse(swap_file_path, media_type="image/webp", filename="swap_result.webp")
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Hair swap failed: {str(e)}")
+        # ✅ Log failed attempts too
+        try:
+            db["swap_logs"].insert_one({
+                "timestamp": int(time.time()),
+                "datetime": datetime.utcnow(),
+                "source_id": source_id,
+                "ref_id": ref_id,
+                "error": str(e),
+                "status": "failed"
+            })
+        except Exception as log_err:
+            print("⚠️ Failed to log error:", log_err)
 
+        raise HTTPException(status_code=500, detail=f"Hair swap failed: {str(e)}")
 # -------------------------------
 # Health endpoint
 # -------------------------------
